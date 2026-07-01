@@ -2,8 +2,6 @@ import json
 import os
 from pathlib import Path
 
-import torch
-
 
 MODEL_NAME = "deep_packet"
 DEFAULT_RAW_ROOT = Path(r"E:\Coding\TrafficData\datasets_raw_add2")
@@ -55,6 +53,8 @@ def write_json(path, obj):
 
 
 def torch_load_cpu(path):
+    import torch
+
     try:
         return torch.load(str(Path(path).absolute()), map_location=torch.device("cpu"), weights_only=True)
     except TypeError:

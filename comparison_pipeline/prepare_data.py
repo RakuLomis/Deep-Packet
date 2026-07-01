@@ -2,7 +2,9 @@ import argparse
 import gzip
 import hashlib
 import json
+import multiprocessing
 import random
+import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -187,7 +189,82 @@ def open_split_writers(out_dir):
     return writers, split_files
 
 
-def process_dataset(raw_root, output_root, dataset, seed, max_length, max_packets_per_dataset):
+def process_pcap_to_temp(args):
+    pcap, raw_dataset_dir, tmp_dir, label_map, seed, max_length = args
+    pcap = Path(pcap)
+    raw_dataset_dir = Path(raw_dataset_dir)
+    tmp_dir = Path(tmp_dir)
+    label_name = pcap.parent.name
+    label = label_map[label_name]
+    rel = str(pcap.relative_to(raw_dataset_dir))
+    stem = hashlib.md5(str(pcap).encode("utf-8")).hexdigest()
+    split_paths = {split: tmp_dir / f"{stem}.{split}.jsonl.gz" for split in ("train", "val", "test")}
+    manifest_path = tmp_dir / f"{stem}.manifest.tsv"
+    counters = Counter()
+    skipped = []
+    flow_count = 0
+    writers = {split: gzip.open(path, "wt", encoding="utf-8") for split, path in split_paths.items()}
+    try:
+        with manifest_path.open("w", encoding="utf-8", newline="") as manifest_file:
+            try:
+                for packet in read_pcap(pcap):
+                    flow_key = canonical_flow_key(packet)
+                    split = split_for_flow(flow_key, seed)
+                    feature = packet_to_feature(packet, label_name, max_length)
+                    if feature is None:
+                        counters["omitted_packets"] += 1
+                        continue
+                    writers[split].write(json.dumps({"feature": feature, "label": label}) + "\n")
+                    manifest_file.write(f"{split}\t{label_name}\t{rel}\t{flow_key}\n")
+                    counters[f"{split}_packets"] += 1
+                    flow_count += 1
+            except Exception as exc:
+                skipped.append(f"{pcap}\t{type(exc).__name__}: {exc}")
+    finally:
+        for writer in writers.values():
+            writer.close()
+    return {
+        "pcap": str(pcap),
+        "split_paths": {split: str(path) for split, path in split_paths.items()},
+        "manifest_path": str(manifest_path),
+        "counts": dict(counters),
+        "skipped": skipped,
+        "flow_count": flow_count,
+    }
+
+
+def append_binary_members(output_path, input_paths):
+    with Path(output_path).open("wb") as out:
+        for path in input_paths:
+            path = Path(path)
+            if path.exists() and path.stat().st_size > 0:
+                with path.open("rb") as src:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
+
+
+def append_manifest(output_path, input_paths):
+    with Path(output_path).open("w", encoding="utf-8", newline="") as out:
+        out.write("split\tlabel\tsource_file\tflow_key\n")
+        for path in input_paths:
+            path = Path(path)
+            if path.exists():
+                with path.open("r", encoding="utf-8") as src:
+                    shutil.copyfileobj(src, out)
+
+
+def auto_workers():
+    try:
+        return max(1, multiprocessing.cpu_count() - 1)
+    except NotImplementedError:
+        return 1
+
+
+def merge_worker_result(result, counters, skipped):
+    counters.update(result["counts"])
+    skipped.extend(result["skipped"])
+
+
+def process_dataset(raw_root, output_root, dataset, seed, max_length, max_packets_per_dataset, workers):
     raw_dataset_dir = Path(raw_root) / dataset
     out_dir = ensure_dir(Path(output_root) / dataset)
     pcaps = discover_pcaps(raw_dataset_dir)
@@ -197,52 +274,72 @@ def process_dataset(raw_root, output_root, dataset, seed, max_length, max_packet
 
     skipped = []
     counters = Counter()
-    flow_to_split = {}
     flow_leakage_count = 0
     random.seed(seed)
 
-    split_writers, split_files = open_split_writers(out_dir)
+    split_files = {split: f"{split}.jsonl.gz" for split in ("train", "val", "test")}
     manifest_path = out_dir / "split_manifest.tsv"
-    try:
-        with manifest_path.open("w", encoding="utf-8", newline="") as manifest_file:
-            manifest_file.write("split\tlabel\tsource_file\tflow_key\n")
-            for pcap in progress(pcaps, desc=f"preprocess {dataset} pcaps", unit="pcap"):
-                label_name = pcap.parent.name
-                label = label_map[label_name]
-                try:
-                    packet_iter = progress(
-                        read_pcap(pcap),
-                        desc=f"packets {pcap.parent.name}/{pcap.name}",
-                        unit="pkt",
-                        leave=False,
-                    )
-                    for packet in packet_iter:
-                        flow_key = canonical_flow_key(packet)
-                        split = split_for_flow(flow_key, seed)
-                        previous_split = flow_to_split.setdefault(flow_key, split)
-                        if previous_split != split:
-                            flow_leakage_count += 1
-                        feature = packet_to_feature(packet, label_name, max_length)
-                        if feature is None:
-                            counters["omitted_packets"] += 1
-                            continue
-                        rel = str(pcap.relative_to(raw_dataset_dir))
-                        split_writers[split].write(json.dumps({"feature": feature, "label": label}) + "\n")
-                        manifest_file.write(f"{split}\t{label_name}\t{rel}\t{flow_key}\n")
-                        counters[f"{split}_packets"] += 1
-                        written = sum(counters[f"{s}_packets"] for s in ("train", "val", "test"))
-                        if written and written % 10000 == 0:
-                            split_writers[split].flush()
-                            manifest_file.flush()
-                        if max_packets_per_dataset and written >= max_packets_per_dataset:
-                            break
-                except Exception as exc:
-                    skipped.append(f"{pcap}\t{type(exc).__name__}: {exc}")
-                if max_packets_per_dataset and sum(counters[f"{s}_packets"] for s in ("train", "val", "test")) >= max_packets_per_dataset:
-                    break
-    finally:
-        for writer in split_writers.values():
-            writer.close()
+    if max_packets_per_dataset or workers <= 1:
+        split_writers, split_files = open_split_writers(out_dir)
+        try:
+            with manifest_path.open("w", encoding="utf-8", newline="") as manifest_file:
+                manifest_file.write("split\tlabel\tsource_file\tflow_key\n")
+                for pcap in progress(pcaps, desc=f"preprocess {dataset} pcaps", unit="pcap"):
+                    label_name = pcap.parent.name
+                    label = label_map[label_name]
+                    try:
+                        packet_iter = progress(
+                            read_pcap(pcap),
+                            desc=f"packets {pcap.parent.name}/{pcap.name}",
+                            unit="pkt",
+                            leave=False,
+                        )
+                        for packet in packet_iter:
+                            flow_key = canonical_flow_key(packet)
+                            split = split_for_flow(flow_key, seed)
+                            feature = packet_to_feature(packet, label_name, max_length)
+                            if feature is None:
+                                counters["omitted_packets"] += 1
+                                continue
+                            rel = str(pcap.relative_to(raw_dataset_dir))
+                            split_writers[split].write(json.dumps({"feature": feature, "label": label}) + "\n")
+                            manifest_file.write(f"{split}\t{label_name}\t{rel}\t{flow_key}\n")
+                            counters[f"{split}_packets"] += 1
+                            written = sum(counters[f"{s}_packets"] for s in ("train", "val", "test"))
+                            if written and written % 10000 == 0:
+                                split_writers[split].flush()
+                                manifest_file.flush()
+                            if max_packets_per_dataset and written >= max_packets_per_dataset:
+                                break
+                    except Exception as exc:
+                        skipped.append(f"{pcap}\t{type(exc).__name__}: {exc}")
+                    if max_packets_per_dataset and sum(counters[f"{s}_packets"] for s in ("train", "val", "test")) >= max_packets_per_dataset:
+                        break
+        finally:
+            for writer in split_writers.values():
+                writer.close()
+    else:
+        tmp_dir = out_dir / "_prepare_tmp"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        split_parts = {split: [] for split in ("train", "val", "test")}
+        manifest_parts = []
+        worker_args = [(pcap, raw_dataset_dir, tmp_dir, label_map, seed, max_length) for pcap in pcaps]
+        try:
+            with multiprocessing.Pool(processes=workers) as pool:
+                iterator = pool.imap_unordered(process_pcap_to_temp, worker_args, chunksize=1)
+                for result in progress(iterator, total=len(worker_args), desc=f"preprocess {dataset} pcaps ({workers} workers)", unit="pcap"):
+                    merge_worker_result(result, counters, skipped)
+                    for split, path in result["split_paths"].items():
+                        split_parts[split].append(path)
+                    manifest_parts.append(result["manifest_path"])
+            for split, parts in progress(split_parts.items(), desc=f"merge {dataset} splits", unit="split"):
+                append_binary_members(out_dir / split_files[split], parts)
+            append_manifest(manifest_path, manifest_parts)
+        finally:
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
     with (out_dir / "skipped_files.log").open("w", encoding="utf-8") as f:
         for line in skipped:
             f.write(line + "\n")
@@ -260,6 +357,8 @@ def process_dataset(raw_root, output_root, dataset, seed, max_length, max_packet
         "counts": dict(counters),
         "split_files": split_files,
         "skipped_file_count": len(skipped),
+        "workers": workers,
+        "parallel_prepare": bool(not max_packets_per_dataset and workers > 1),
     }
     write_json(out_dir / "preprocess_meta.json", meta)
     return meta
@@ -273,12 +372,14 @@ def parse_args():
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--max-length", default=1500, type=int)
     parser.add_argument("--max-packets-per-dataset", default=0, type=int, help="0 means no cap; useful for dry runs.")
+    parser.add_argument("--workers", default=0, type=int, help="PCAP-level workers. 0 uses cpu_count()-1; 1 disables parallelism.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     selected = args.datasets_ or DATASETS
+    workers = auto_workers() if args.workers == 0 else max(1, args.workers)
     all_meta = []
     for dataset in selected:
         all_meta.append(
@@ -289,6 +390,7 @@ def main():
                 args.seed,
                 args.max_length,
                 args.max_packets_per_dataset or None,
+                workers,
             )
         )
     print(json.dumps(all_meta, indent=2, sort_keys=True))

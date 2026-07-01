@@ -45,15 +45,22 @@ def parse_args():
     parser.add_argument("--checkpoint-dir", default="checkpoints/comparison")
     parser.add_argument("--epochs", default=20, type=int)
     parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--cpu", action="store_true", default=True)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="Training device. CPU is still forced only for benchmark/evaluation scripts.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if args.cpu:
+    if args.device == "cpu":
         force_cpu_environment()
-        torch.set_num_threads(torch.get_num_threads())
+        device = torch.device("cpu")
+    elif args.device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested for training, but torch.cuda.is_available() is false.")
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"training_device={device}")
     dataset_dir = Path(args.data_root) / args.dataset
     label_map = read_json(dataset_dir / "label_map.json")
     if not label_map:
@@ -65,7 +72,7 @@ def main():
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     torch.manual_seed(args.seed)
-    model = build_model(args.model_name, len(label_map), train_path, input_length)
+    model = build_model(args.model_name, len(label_map), train_path, input_length).to(device)
     model.train()
     dataset = packet_dataset(train_path)
     loader = DataLoader(
@@ -80,8 +87,8 @@ def main():
         total_n = 0
         batch_iter = progress(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
         for batch in batch_iter:
-            x = batch["feature"].float()
-            y = batch["label"].long()
+            x = batch["feature"].float().to(device)
+            y = batch["label"].long().to(device)
             optimizer.zero_grad(set_to_none=True)
             logits = model(x)
             loss = F.cross_entropy(logits, y)
