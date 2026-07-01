@@ -44,6 +44,7 @@ def parse_args():
     parser.add_argument("--model", dest="model_name", default="cnn", choices=["cnn", "resnet"])
     parser.add_argument("--checkpoint-dir", default="checkpoints/comparison")
     parser.add_argument("--epochs", default=20, type=int)
+    parser.add_argument("--batch-size", default=256, type=int)
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="Training device. CPU is still forced only for benchmark/evaluation scripts.")
     return parser.parse_args()
@@ -64,7 +65,19 @@ def main():
     dataset_dir = Path(args.data_root) / args.dataset
     label_map = read_json(dataset_dir / "label_map.json")
     if not label_map:
-        raise FileNotFoundError(f"Missing label_map.json under {dataset_dir}")
+        expected = [
+            dataset_dir / "label_map.json",
+            dataset_dir / "train.jsonl.gz",
+            dataset_dir / "preprocess_meta.json",
+        ]
+        raise FileNotFoundError(
+            "Prepared data is missing for "
+            f"dataset={args.dataset!r} under data_root={args.data_root!r}.\n"
+            "Expected at least:\n"
+            + "\n".join(f"  - {path}" for path in expected)
+            + "\nIf you already prepared data elsewhere, pass --data-root to that directory; "
+            "otherwise rerun without --skip-prepare."
+        )
     meta = read_json(dataset_dir / "preprocess_meta.json", {})
     input_length = int(meta.get("input_length", 1500))
     train_path = dataset_dir / "train.parquet"
@@ -77,7 +90,7 @@ def main():
     dataset = packet_dataset(train_path)
     loader = DataLoader(
         dataset,
-        batch_size=16,
+        batch_size=args.batch_size,
         shuffle=not isinstance(dataset, JsonlPacketIterableDataset),
         collate_fn=collate_packet_batch,
     )

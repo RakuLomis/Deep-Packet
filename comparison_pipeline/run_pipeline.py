@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--skip-prepare", action="store_true", help="Reuse existing prepared data and start from training.")
     parser.add_argument("--model", dest="model_name", default="cnn", choices=["cnn", "resnet"])
     parser.add_argument("--epochs", default=20, type=int)
+    parser.add_argument("--train-batch-size", default=256, type=int)
     parser.add_argument("--train-device", default="auto", choices=["auto", "cpu", "cuda"], help="Training device. Benchmark stays CPU-only.")
     parser.add_argument("--workers", default=0, type=int, help="PCAP-level workers for prepare_data. 0 uses cpu_count()-1.")
     parser.add_argument("--python-cmd", default=" ".join(PYTHON_CMD))
@@ -65,7 +66,7 @@ def main():
         ckpt = Path("checkpoints") / "comparison" / dataset / f"{args.model_name}.ckpt"
         steps.extend(
             [
-                (f"train {dataset}", py + ["-m", "comparison_pipeline.train", "--data-root", args.data_root, "--dataset", dataset, "--model", args.model_name, "--epochs", str(args.epochs), "--device", args.train_device]),
+                (f"train {dataset}", py + ["-m", "comparison_pipeline.train", "--data-root", args.data_root, "--dataset", dataset, "--model", args.model_name, "--epochs", str(args.epochs), "--batch-size", str(args.train_batch_size), "--device", args.train_device]),
                 (f"evaluate {dataset}", py + ["-m", "comparison_pipeline.evaluate", "--data-root", args.data_root, "--results-root", args.results_root, "--dataset", dataset, "--model", args.model_name, "--checkpoint", str(ckpt)]),
                 (f"profile {dataset}", py + ["-m", "comparison_pipeline.profile_model", "--data-root", args.data_root, "--results-root", args.results_root, "--dataset", dataset, "--model", args.model_name, "--checkpoint", str(ckpt)]),
                 (f"benchmark {dataset}", py + ["-m", "comparison_pipeline.cpu_benchmark", "--data-root", args.data_root, "--results-root", args.results_root, "--dataset", dataset, "--model", args.model_name, "--checkpoint", str(ckpt)]),

@@ -4,8 +4,8 @@ from pathlib import Path
 
 
 MODEL_NAME = "deep_packet"
-DEFAULT_RAW_ROOT = Path(r"E:\Coding\TrafficData\datasets_raw_add2")
-DEFAULT_OUTPUT_ROOT = Path(r"E:\Coding\TrafficData\generated_for_comparison\deep_packet")
+DEFAULT_RAW_ROOT = Path("datasets_raw_add2")
+DEFAULT_OUTPUT_ROOT = Path("generated_for_comparison") / MODEL_NAME
 DEFAULT_RESULTS_ROOT = Path("results")
 DATASETS = ("cstnet_tls_1.3", "CipherSpectrum")
 PYTHON_CMD = ["conda", "run", "-n", "Pytorch_env", "python"]
