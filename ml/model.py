@@ -1,13 +1,26 @@
 import multiprocessing
+import inspect
+from types import SimpleNamespace
 
-import datasets
 import torch
-from pytorch_lightning import LightningModule
 from torch import nn as nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from ml.dataset import dataset_collate_function
+from comparison_pipeline.dataio import JsonlPacketIterableDataset, collate_packet_batch, packet_dataset
+
+try:
+    from pytorch_lightning import LightningModule
+except ModuleNotFoundError:
+    class LightningModule(nn.Module):
+        def save_hyperparameters(self):
+            frame = inspect.currentframe().f_back
+            values = {k: v for k, v in frame.f_locals.items() if k != "self"}
+            self.hparams = SimpleNamespace(**values)
+
+        def log(self, *args, **kwargs):
+            return None
 
 
 class CNN(LightningModule):
@@ -97,9 +110,17 @@ class CNN(LightningModule):
         return x
 
     def train_dataloader(self):
-        # expect to get train folder
-        dataset_dict = datasets.load_dataset(self.hparams.data_path)
-        dataset = dataset_dict[list(dataset_dict.keys())[0]]
+        # Prefer the local parquet loader used by the comparison pipeline; fall
+        # back to the original HuggingFace datasets path for compatibility.
+        try:
+            dataset = packet_dataset(self.hparams.data_path)
+            collate_fn = collate_packet_batch
+        except Exception:
+            import datasets
+
+            dataset_dict = datasets.load_dataset(self.hparams.data_path)
+            dataset = dataset_dict[list(dataset_dict.keys())[0]]
+            collate_fn = dataset_collate_function
         try:
             num_workers = multiprocessing.cpu_count()
         except:
@@ -108,8 +129,8 @@ class CNN(LightningModule):
             dataset,
             batch_size=16,
             num_workers=num_workers,
-            collate_fn=dataset_collate_function,
-            shuffle=True,
+            collate_fn=collate_fn,
+            shuffle=not isinstance(dataset, JsonlPacketIterableDataset),
         )
 
         return dataloader
@@ -528,9 +549,17 @@ class ResNet(LightningModule):
         return x
 
     def train_dataloader(self):
-        # expect to get train folder
-        dataset_dict = datasets.load_dataset(self.hparams.data_path)
-        dataset = dataset_dict[list(dataset_dict.keys())[0]]
+        # Prefer the local parquet loader used by the comparison pipeline; fall
+        # back to the original HuggingFace datasets path for compatibility.
+        try:
+            dataset = packet_dataset(self.hparams.data_path)
+            collate_fn = collate_packet_batch
+        except Exception:
+            import datasets
+
+            dataset_dict = datasets.load_dataset(self.hparams.data_path)
+            dataset = dataset_dict[list(dataset_dict.keys())[0]]
+            collate_fn = dataset_collate_function
         try:
             num_workers = multiprocessing.cpu_count()
         except:
@@ -539,8 +568,8 @@ class ResNet(LightningModule):
             dataset,
             batch_size=16,
             num_workers=num_workers,
-            collate_fn=dataset_collate_function,
-            shuffle=True,
+            collate_fn=collate_fn,
+            shuffle=not isinstance(dataset, JsonlPacketIterableDataset),
         )
 
         return dataloader

@@ -148,9 +148,19 @@ cython_debug/
 data/
 processed_data/
 train_test_data/
+generated_for_comparison*/
+results/metrics/
+results/profiles/
+results/latency/
 
 # model file
 model/
+models/finetuned/
+checkpoints/
+outputs/
+*.pt
+*.pth
+*.ckpt
 
 # logs
 lightning_logs/
