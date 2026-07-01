@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--raw-root", default=str(DEFAULT_RAW_ROOT))
     parser.add_argument("--data-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
+    parser.add_argument("--dataset", dest="datasets_", action="append", choices=DATASETS, help="Dataset to run. Repeat to run multiple. Defaults to both target datasets.")
+    parser.add_argument("--skip-prepare", action="store_true", help="Reuse existing prepared data and start from training.")
     parser.add_argument("--model", dest="model_name", default="cnn", choices=["cnn", "resnet"])
     parser.add_argument("--epochs", default=20, type=int)
     parser.add_argument("--train-device", default="auto", choices=["auto", "cpu", "cuda"], help="Training device. Benchmark stays CPU-only.")
@@ -43,23 +45,23 @@ def parse_args():
 def main():
     args = parse_args()
     py = resolve_python_cmd(args.python_cmd)
-    steps = [
-        (
-            "prepare_data",
-            py
-            + [
-                "-m",
-                "comparison_pipeline.prepare_data",
-                "--raw-root",
-                args.raw_root,
-                "--output-root",
-                args.data_root,
-                "--workers",
-                str(args.workers),
-            ],
-        )
-    ]
-    for dataset in DATASETS:
+    selected_datasets = args.datasets_ or DATASETS
+    steps = []
+    if not args.skip_prepare:
+        prepare_cmd = py + [
+            "-m",
+            "comparison_pipeline.prepare_data",
+            "--raw-root",
+            args.raw_root,
+            "--output-root",
+            args.data_root,
+            "--workers",
+            str(args.workers),
+        ]
+        for dataset in selected_datasets:
+            prepare_cmd.extend(["--dataset", dataset])
+        steps.append(("prepare_data", prepare_cmd))
+    for dataset in selected_datasets:
         ckpt = Path("checkpoints") / "comparison" / dataset / f"{args.model_name}.ckpt"
         steps.extend(
             [
