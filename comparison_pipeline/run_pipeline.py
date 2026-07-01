@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-from comparison_pipeline.common import DATASETS, DEFAULT_OUTPUT_ROOT, DEFAULT_RAW_ROOT, DEFAULT_RESULTS_ROOT, PYTHON_CMD, progress
+from comparison_pipeline.common import DATASETS, DEFAULT_OUTPUT_ROOT, DEFAULT_RAW_ROOT, DEFAULT_RESULTS_ROOT, progress
 
 
 def run(cmd, dry_run):
@@ -15,6 +15,8 @@ def run(cmd, dry_run):
 
 
 def resolve_python_cmd(python_cmd):
+    if not python_cmd or python_cmd == "current":
+        return [sys.executable, "-u"]
     active_env = os.environ.get("CONDA_DEFAULT_ENV")
     parts = python_cmd.split()
     if active_env == "Pytorch_env" and parts[:4] == ["conda", "run", "-n", "Pytorch_env"]:
@@ -38,7 +40,7 @@ def parse_args():
     parser.add_argument("--train-batch-size", default=256, type=int)
     parser.add_argument("--train-device", default="auto", choices=["auto", "cpu", "cuda"], help="Training device. Benchmark stays CPU-only.")
     parser.add_argument("--workers", default=0, type=int, help="PCAP-level workers for prepare_data. 0 uses cpu_count()-1.")
-    parser.add_argument("--python-cmd", default=" ".join(PYTHON_CMD))
+    parser.add_argument("--python-cmd", default="current", help='Python command for child steps. Default "current" reuses this interpreter.')
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
